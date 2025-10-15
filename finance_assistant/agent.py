@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import asyncio
 from google.adk.agents import Agent
 
 # Tool 1: Calculate compound interest
@@ -286,7 +286,7 @@ def calculate_monthly_savings(
 # Define the agent with all tools
 root_agent = Agent(
     name="finance_assistant",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     description="""
     A financial calculation assistant that can help with:
     - Compound interest calculations for investments
@@ -307,6 +307,11 @@ root_agent = Agent(
         "2. Explain the results in simple terms\n"
         "3. Provide context and advice when relevant\n"
         "4. Be encouraging and positive about their financial planning!\n"
+        "\n"
+        "When users ask about multiple "
+        "scenarios or calculations, call ALL necessary tools at once to be efficient. "
+        "For example, if comparing investment options, call the calculation tool for "
+        "EACH option simultaneously."
         "\n"
         "You are NOT a licensed financial advisor - remind users to consult professionals for major decisions."
     ),
