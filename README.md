@@ -77,16 +77,6 @@ adk web
 # Then select the agent you want to interact with
 ```
 
-Or run a specific agent directly:
-
-```bash
-# Navigate to agent directory
-cd chuck_norris_agent
-
-# Run the agent
-adk web
-```
-
 ## 📚 Key Concepts Learned
 
 ### 1. **Agent Basics**
@@ -141,10 +131,11 @@ agent = Agent(tools=[toolset])
 
 ## 📖 Resources
 
+- [ADK Training](https://raphaelmansuy.github.io/adk_training/)
 - [Google ADK Documentation](https://google.github.io/adk-docs/)
-- [Google ADK GitHub](https://github.com/google/adk)
 - [OpenAPI Specification](https://swagger.io/specification/)
 - [GitHub REST API Docs](https://docs.github.com/en/rest)
+
 
 ## 🎓 Learning Outcomes
 
