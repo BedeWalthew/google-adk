@@ -41,6 +41,19 @@ Advanced agent using **authenticated OpenAPI tools** for code review automation.
   - Review comments (read/write)
 - **Key Learning:** API authentication, complex workflows, real-world automation
 
+### 5. **Jira Assistant** (`jira_assistant/`)
+Powerful agent for Jira issue management using **authenticated OpenAPI tools**.
+- **Pattern:** OpenAPIToolset with Basic Auth authentication
+- **API:** Jira REST API v3
+- **Tools:**
+  - List projects
+  - Search issues with JQL
+  - Get issue details
+  - Create issues
+  - Add comments
+  - Transition issues through workflows
+- **Key Learning:** Parallel tool execution, Jira API integration, complex query handling
+
 ## 🚀 Getting Started
 
 ### Prerequisites
@@ -64,6 +77,11 @@ GOOGLE_API_KEY=your_google_api_key_here
 
 # GitHub Token (required for github_review_agent only)
 GITHUB_TOKEN=ghp_your_github_token_here
+
+# Jira credentials (required for jira_assistant only)
+JIRA_EMAIL=your_jira_email@example.com
+JIRA_API_TOKEN=your_jira_api_token_here
+JIRA_DOMAIN=your-domain.atlassian.net
 ```
 
 ### Running Agents
@@ -125,7 +143,7 @@ agent = Agent(tools=[toolset])
 
 - **Framework:** Google Agent Development Kit (ADK)
 - **LLM:** Google Gemini (2.0-flash, 2.5-flash)
-- **APIs:** Chuck Norris API, GitHub REST API
+- **APIs:** Chuck Norris API, GitHub REST API, Jira REST API
 - **Language:** Python 3.13+
 - **Tools:** OpenAPI, REST APIs, Custom Functions
 
@@ -135,6 +153,7 @@ agent = Agent(tools=[toolset])
 - [Google ADK Documentation](https://google.github.io/adk-docs/)
 - [OpenAPI Specification](https://swagger.io/specification/)
 - [GitHub REST API Docs](https://docs.github.com/en/rest)
+- [Jira REST API Docs](https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/)
 
 
 ## 🎓 Learning Outcomes
@@ -148,6 +167,7 @@ Through building these agents, I learned:
 5. ✅ Building domain-specific tools
 6. ✅ Instruction engineering for agent behavior
 7. ✅ Real-world automation with GitHub API
+8. ✅ Parallel tool execution for efficient API usage
 
 ## 📁 Project Structure
 
@@ -163,10 +183,16 @@ google-adk-tuto/
 ├── finance_assistant/           # Custom tools example
 │   ├── agent.py
 │   └── __init__.py
-└── github_review_agent/         # Advanced authenticated API agent
+├── github_review_agent/         # Advanced authenticated API agent
+│   ├── agent.py
+│   ├── .env.example
+│   ├── __init__.py
+│   └── README.md
+└── jira_assistant/             # Jira issue management agent
     ├── agent.py
     ├── .env.example
     ├── __init__.py
+    ├── example.py
     └── README.md
 ```
 
