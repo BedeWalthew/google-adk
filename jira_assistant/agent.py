@@ -628,7 +628,7 @@ jira_toolset = OpenAPIToolset(
 
 root_agent = Agent(
     name="jira_assistant",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
 
     description="""
     Jira issue retrieval assistant that can search for issues, view details,
@@ -689,6 +689,15 @@ root_agent = Agent(
     - "Add a comment to issue PROJECT-789 about the latest update"
     - "What transitions are available for issue PROJECT-101?"
     - "Move issue PROJECT-101 to 'In Progress'"
+    
+    PARALLEL EXECUTION:
+    When users ask about multiple issues or operations, execute ALL necessary API calls in parallel to be efficient.
+    For example:
+    - If asked to find issues across multiple projects, call search_issues for EACH project simultaneously
+    - If asked to get details for multiple issues, call get_issue for EACH issue in parallel
+    - If asked to perform operations on multiple issues, execute those operations concurrently
+    
+    This parallel execution makes you much more responsive and efficient when handling batch operations.
     """,
 
     # Pass the toolset to the agent
