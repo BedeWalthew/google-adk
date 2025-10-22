@@ -1,16 +1,12 @@
 """
-Weather Assistant API - Production FastAPI Deployment
+Enterprise Multi-Agent Architecture Example
 
-Production-ready FastAPI server for weather assistant agent.
-
-This implements production best practices:
-- Structured JSON logging with request tracing
-- API key authentication (optional)
-- Restricted CORS with configuration
-- Timeout handling for reliability
-- Proper error handling with typed exceptions
-- Input validation with limits
-- Health checks with dependency status
+This demonstrates how to manage multiple agents at scale with:
+- Single unified endpoint with agent selection
+- Agent registry pattern
+- Dynamic agent loading
+- Per-agent metrics and monitoring
+- Centralized configuration
 """
 
 import asyncio
@@ -20,31 +16,112 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+# Import your agents
 from agent import weather_agent
+# from other_agents import customer_support_agent, sales_agent, analytics_agent
 
-# Load environment variables
 load_dotenv()
+
+# ============================================================================
+# AGENT REGISTRY PATTERN
+# ============================================================================
+
+class AgentRegistry:
+    """
+    Central registry for all agents in the system.
+    Provides discovery, routing, and lifecycle management.
+    """
+    
+    def __init__(self):
+        self._agents: Dict[str, Any] = {}
+        self._runners: Dict[str, Runner] = {}
+        self._metrics: Dict[str, Dict[str, int]] = {}
+        self.session_service = InMemorySessionService()
+    
+    def register_agent(self, agent_id: str, agent: Any, description: str = ""):
+        """Register an agent in the system."""
+        self._agents[agent_id] = {
+            "agent": agent,
+            "description": description,
+            "name": agent.name,
+            "model": agent.model
+        }
+        
+        # Create runner for this agent
+        self._runners[agent_id] = Runner(
+            app_name=f"{agent_id}_app",
+            agent=agent,
+            session_service=self.session_service
+        )
+        
+        # Initialize metrics
+        self._metrics[agent_id] = {
+            "total_requests": 0,
+            "successful_requests": 0,
+            "failed_requests": 0,
+            "total_tokens": 0
+        }
+        
+        logger.info(f"✅ Registered agent: {agent_id} ({agent.name})")
+    
+    def get_agent(self, agent_id: str) -> Optional[Any]:
+        """Get agent by ID."""
+        return self._agents.get(agent_id, {}).get("agent")
+    
+    def get_runner(self, agent_id: str) -> Optional[Runner]:
+        """Get runner for agent."""
+        return self._runners.get(agent_id)
+    
+    def list_agents(self) -> Dict[str, Dict[str, Any]]:
+        """List all registered agents."""
+        return {
+            agent_id: {
+                "name": info["name"],
+                "model": info["model"],
+                "description": info["description"],
+                "metrics": self._metrics.get(agent_id, {})
+            }
+            for agent_id, info in self._agents.items()
+        }
+    
+    def update_metrics(self, agent_id: str, success: bool, tokens: int = 0):
+        """Update metrics for an agent."""
+        if agent_id in self._metrics:
+            self._metrics[agent_id]["total_requests"] += 1
+            if success:
+                self._metrics[agent_id]["successful_requests"] += 1
+                self._metrics[agent_id]["total_tokens"] += tokens
+            else:
+                self._metrics[agent_id]["failed_requests"] += 1
+    
+    def get_metrics(self, agent_id: str) -> Dict[str, int]:
+        """Get metrics for a specific agent."""
+        return self._metrics.get(agent_id, {})
+
+
+# Global agent registry
+agent_registry = AgentRegistry()
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
 class Settings(BaseSettings):
-    """Application configuration from environment variables."""
+    """Application configuration."""
     
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -52,15 +129,11 @@ class Settings(BaseSettings):
         extra="ignore"
     )
     
-    # App settings
-    app_name: str = "Weather Assistant API"
+    app_name: str = "Enterprise Multi-Agent API"
     app_version: str = "1.0"
     environment: str = "development"
-    
-    # Server settings
     host: str = "0.0.0.0"
     port: int = 8000
-    workers: int = 1
     
     # Security
     api_key: Optional[str] = None
@@ -72,101 +145,61 @@ class Settings(BaseSettings):
     max_query_length: int = 10000
     max_tokens: int = 4096
     
-    # Gemini settings
-    use_vertexai: bool = False
-    
-    @field_validator('enable_auth', 'use_vertexai', mode='before')
-    @classmethod
-    def parse_bool(cls, v):
-        """Parse boolean from string."""
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, str):
-            return v.lower() in ('true', '1', 'yes')
-        return bool(v)
-    
     def get_allowed_origins(self) -> list[str]:
-        """Get allowed origins as a list."""
         return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
 
 settings = Settings()
 
 # ============================================================================
-# LOGGING CONFIGURATION
+# LOGGING
 # ============================================================================
 
-def setup_logging() -> logging.Logger:
-    """Configure structured JSON logging."""
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
-    
-    # Remove existing handlers
-    logger.handlers.clear()
-    
-    # Console handler with formatting
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    
-    return logger
-
-logger = setup_logging()
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # ============================================================================
-# VALIDATION & STARTUP
-# ============================================================================
-
-def validate_configuration() -> None:
-    """Validate configuration on startup."""
-    logger.info("Validating configuration...")
-    
-    if settings.environment == "production":
-        if settings.enable_auth and not settings.api_key:
-            raise ValueError(
-                "ENABLE_AUTH is true but API_KEY is not set. "
-                "Set API_KEY or set ENABLE_AUTH=false"
-            )
-        
-        # Validate origins are not wildcard
-        if "*" in settings.allowed_origins:
-            logger.warning(
-                "ALLOWED_ORIGINS contains '*'. This is NOT recommended for production. "
-                "Set specific origins in ALLOWED_ORIGINS environment variable."
-            )
-    
-    # Set Gemini environment
-    os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = str(settings.use_vertexai).lower()
-    
-    logger.info(f"Configuration validated. Environment: {settings.environment}")
-    logger.info(f"Allowed origins: {settings.get_allowed_origins()}")
-
-# ============================================================================
-# LIFESPAN EVENTS
+# LIFESPAN - REGISTER ALL AGENTS
 # ============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan: startup and shutdown."""
-    # Startup
-    logger.info("🚀 Weather Assistant API starting up...")
-    validate_configuration()
-    logger.info(f"Agent: {weather_agent.name}")
-    logger.info(f"Model: {weather_agent.model}")
+    """Application lifespan: register agents on startup."""
+    logger.info("🚀 Enterprise Multi-Agent API starting up...")
     
-    # Check for API key
-    weather_api_key = os.getenv("OPENWEATHER_API_KEY")
-    if weather_api_key:
-        logger.info(f"✅ OpenWeather API Key configured")
-    else:
-        logger.warning("⚠️  Warning: OPENWEATHER_API_KEY not set!")
+    # Register all your agents here
+    agent_registry.register_agent(
+        agent_id="weather",
+        agent=weather_agent,
+        description="Provides current weather and forecasts for any location worldwide"
+    )
+    
+    # Example: Register more agents
+    # agent_registry.register_agent(
+    #     agent_id="customer_support",
+    #     agent=customer_support_agent,
+    #     description="Handles customer inquiries and support tickets"
+    # )
+    # 
+    # agent_registry.register_agent(
+    #     agent_id="sales",
+    #     agent=sales_agent,
+    #     description="Assists with product information and sales inquiries"
+    # )
+    # 
+    # agent_registry.register_agent(
+    #     agent_id="analytics",
+    #     agent=analytics_agent,
+    #     description="Provides business analytics and data insights"
+    # )
+    
+    logger.info(f"📊 Registered {len(agent_registry.list_agents())} agents")
     
     yield
     
-    # Shutdown
-    logger.info("🛑 Weather Assistant API shutting down...")
+    logger.info("🛑 Enterprise Multi-Agent API shutting down...")
 
 # ============================================================================
 # APP INITIALIZATION
@@ -175,101 +208,51 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="Production-ready Weather Assistant API with full monitoring and security",
+    description="Enterprise-scale multi-agent API with centralized routing and management",
     lifespan=lifespan
 )
 
-# CORS configuration with restricted origins
-cors_origins = settings.get_allowed_origins()
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
+    allow_origins=settings.get_allowed_origins(),
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "Authorization"],
 )
 
-# Create session service and runner
-session_service = InMemorySessionService()
-runner = Runner(
-    app_name="weather_assistant_app",
-    agent=weather_agent,
-    session_service=session_service
-)
-
-# ============================================================================
-# METRICS TRACKING
-# ============================================================================
-
-class HealthStatus(str, Enum):
-    """Health status enumeration."""
-    HEALTHY = "healthy"
-    DEGRADED = "degraded"
-    UNHEALTHY = "unhealthy"
-
-# Metrics
-service_start_time = datetime.now()
-request_count = 0
-successful_requests = 0
-error_count = 0
-timeout_count = 0
-
 # ============================================================================
 # REQUEST/RESPONSE MODELS
 # ============================================================================
 
-class QueryRequest(BaseModel):
-    """Request model for agent invocation with validation."""
-    query: str = Field(
-        ...,
-        min_length=1,
-        max_length=10000,
-        description="Query prompt for the weather assistant"
-    )
-    temperature: float = Field(
-        0.5,
-        ge=0.0,
-        le=2.0,
-        description="Controls randomness: higher = more creative"
-    )
-    max_tokens: int = Field(
-        2048,
-        ge=1,
-        le=4096,
-        description="Maximum tokens in response"
-    )
+class AgentInvokeRequest(BaseModel):
+    """Request model for agent invocation."""
+    agent_id: str = Field(..., description="ID of the agent to invoke (e.g., 'weather', 'support')")
+    query: str = Field(..., min_length=1, max_length=10000, description="Query for the agent")
+    temperature: float = Field(0.7, ge=0.0, le=2.0, description="Temperature for generation")
+    max_tokens: int = Field(2048, ge=1, le=4096, description="Max tokens in response")
+    session_id: Optional[str] = Field(None, description="Optional session ID for conversation continuity")
 
-class QueryResponse(BaseModel):
+class AgentInvokeResponse(BaseModel):
     """Response model for agent invocation."""
+    agent_id: str = Field(..., description="ID of the agent that processed the request")
     response: str = Field(..., description="Agent response text")
     model: str = Field(..., description="Model used")
     tokens: int = Field(..., description="Token count estimate")
-    request_id: str = Field(default="", description="Request tracking ID")
+    request_id: str = Field(..., description="Request tracking ID")
+    session_id: str = Field(..., description="Session ID for conversation continuity")
 
-# ============================================================================
-# AUTHENTICATION
-# ============================================================================
+class AgentInfo(BaseModel):
+    """Information about an agent."""
+    agent_id: str
+    name: str
+    model: str
+    description: str
+    metrics: Dict[str, int]
 
-async def verify_api_key(authorization: Optional[str] = None) -> None:
-    """Verify API key if authentication is enabled."""
-    if not settings.enable_auth:
-        return
-    
-    if not authorization or not authorization.startswith("Bearer "):
-        logger.warning("Missing or invalid authorization header")
-        raise HTTPException(
-            status_code=401,
-            detail="Missing or invalid authorization"
-        )
-    
-    token = authorization.replace("Bearer ", "")
-    if token != settings.api_key:
-        logger.warning("Invalid API key attempted")
-        raise HTTPException(
-            status_code=403,
-            detail="Invalid API key"
-        )
+class AgentListResponse(BaseModel):
+    """Response model for listing agents."""
+    agents: Dict[str, AgentInfo]
+    total_agents: int
 
 # ============================================================================
 # ENDPOINTS
@@ -282,131 +265,132 @@ async def root():
         "message": settings.app_name,
         "version": settings.app_version,
         "environment": settings.environment,
+        "total_agents": len(agent_registry.list_agents()),
         "endpoints": {
-            "health": "/health",
-            "invoke": "/invoke (POST)",
-            "docs": "/docs"
+            "agents": "/agents (GET) - List all available agents",
+            "invoke": "/invoke (POST) - Invoke any agent",
+            "agent_metrics": "/agents/{agent_id}/metrics (GET) - Get agent metrics",
+            "health": "/health (GET) - Health check",
+            "docs": "/docs - API documentation"
         }
     }
 
-@app.get("/health")
-async def health_check():
+@app.get("/agents", response_model=AgentListResponse)
+async def list_agents():
     """
-    Comprehensive health check endpoint with dependency status.
+    List all available agents in the system.
     
-    Returns:
-        - healthy (200): All systems operational
-        - degraded (200): Service working but with issues
-        - unhealthy (503): Service unavailable
+    Returns information about each agent including:
+    - Agent ID and name
+    - Model being used
+    - Description of capabilities
+    - Usage metrics
     """
-    uptime = (datetime.now() - service_start_time).total_seconds()
-    error_rate = error_count / max(request_count, 1)
+    agents_info = agent_registry.list_agents()
     
-    # Determine health status
-    if request_count == 0:
-        health_status = HealthStatus.HEALTHY
-    elif error_rate > 0.1:  # More than 10% error rate
-        health_status = HealthStatus.UNHEALTHY
-    elif error_rate > 0.05:  # More than 5% error rate
-        health_status = HealthStatus.DEGRADED
-    else:
-        health_status = HealthStatus.HEALTHY
-    
-    response_data = {
-        "status": health_status.value,
-        "service": "weather-assistant-api",
-        "environment": settings.environment,
-        "uptime_seconds": uptime,
-        "request_count": request_count,
-        "error_count": error_count,
-        "agent": {
-            "name": weather_agent.name,
-            "model": weather_agent.model
-        },
-        "metrics": {
-            "successful_requests": successful_requests,
-            "timeout_count": timeout_count,
-            "error_rate": round(error_rate, 3)
-        }
-    }
-    
-    # Return appropriate status code
-    if health_status == HealthStatus.UNHEALTHY:
-        return JSONResponse(
-            status_code=503,
-            content=response_data
+    agents_dict = {
+        agent_id: AgentInfo(
+            agent_id=agent_id,
+            name=info["name"],
+            model=info["model"],
+            description=info["description"],
+            metrics=info["metrics"]
         )
-    else:
-        return response_data
-
-@app.post(
-    "/invoke",
-    response_model=QueryResponse,
-    status_code=200,
-    responses={
-        200: {"description": "Successful agent invocation"},
-        400: {"description": "Invalid request parameters"},
-        401: {"description": "Missing or invalid authentication"},
-        403: {"description": "Forbidden"},
-        504: {"description": "Request timeout"},
-        500: {"description": "Server error"}
+        for agent_id, info in agents_info.items()
     }
-)
-async def invoke_agent(
-    request: QueryRequest,
-    authorization: Optional[str] = None
-):
-    """
-    Invoke the weather assistant agent.
     
-    Args:
-        request: Query and configuration parameters
-        authorization: Bearer token for API authentication
-        
-    Returns:
-        Agent response with metadata
-        
-    Raises:
-        HTTPException: For invalid requests or server errors
-    """
-    global request_count, successful_requests, error_count, timeout_count
+    return AgentListResponse(
+        agents=agents_dict,
+        total_agents=len(agents_dict)
+    )
+
+@app.get("/agents/{agent_id}/metrics")
+async def get_agent_metrics(agent_id: str):
+    """Get detailed metrics for a specific agent."""
+    if not agent_registry.get_agent(agent_id):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Agent '{agent_id}' not found"
+        )
     
+    metrics = agent_registry.get_metrics(agent_id)
+    agent_info = agent_registry.list_agents()[agent_id]
+    
+    return {
+        "agent_id": agent_id,
+        "agent_name": agent_info["name"],
+        "metrics": metrics,
+        "success_rate": (
+            metrics["successful_requests"] / max(metrics["total_requests"], 1)
+        ) if metrics["total_requests"] > 0 else 0,
+        "avg_tokens_per_request": (
+            metrics["total_tokens"] / max(metrics["successful_requests"], 1)
+        ) if metrics["successful_requests"] > 0 else 0
+    }
+
+@app.post("/invoke", response_model=AgentInvokeResponse)
+async def invoke_agent(request: AgentInvokeRequest):
+    """
+    Invoke any registered agent with a query.
+    
+    This is the main endpoint for interacting with agents.
+    Specify the agent_id to route to the appropriate agent.
+    
+    Example:
+    ```json
+    {
+        "agent_id": "weather",
+        "query": "What's the weather in Paris?",
+        "temperature": 0.7,
+        "max_tokens": 2048
+    }
+    ```
+    """
     request_id = str(uuid.uuid4())
-    request_count += 1
     
     logger.info(
         f"invoke_agent.start - request_id={request_id} "
-        f"query_len={len(request.query)}"
+        f"agent_id={request.agent_id} query_len={len(request.query)}"
     )
     
     try:
-        # Verify authentication if enabled
-        await verify_api_key(authorization)
+        # Get agent and runner
+        agent = agent_registry.get_agent(request.agent_id)
+        runner = agent_registry.get_runner(request.agent_id)
+        
+        if not agent or not runner:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Agent '{request.agent_id}' not found. "
+                       f"Available agents: {list(agent_registry.list_agents().keys())}"
+            )
         
         # Validate query length
         if len(request.query) > settings.max_query_length:
-            logger.warning(
-                f"invoke_agent.query_too_long - request_id={request_id} "
-                f"len={len(request.query)}"
-            )
             raise HTTPException(
                 status_code=400,
                 detail=f"Query exceeds maximum length of {settings.max_query_length}"
             )
         
-        # Create a session for this invocation
-        session = await session_service.create_session(
-            app_name="weather_assistant_app",
-            user_id="api_user"
-        )
+        # Create or get session
+        if request.session_id:
+            # Use existing session
+            session_id = request.session_id
+        else:
+            # Create new session
+            session = await agent_registry.session_service.create_session(
+                app_name=f"{request.agent_id}_app",
+                user_id="api_user"
+            )
+            session_id = session.id
         
         # Update agent config
-        weather_agent.generate_content_config = types.GenerateContentConfig(
+        agent.generate_content_config = types.GenerateContentConfig(
             temperature=request.temperature,
             max_output_tokens=request.max_tokens
         )
         
-        # Create message content
+        # Create message
         new_message = types.Content(
             role="user",
             parts=[types.Part(text=request.query)]
@@ -418,77 +402,81 @@ async def invoke_agent(
             async with asyncio.timeout(settings.request_timeout):
                 async for event in runner.run_async(
                     user_id="api_user",
-                    session_id=session.id,
+                    session_id=session_id,
                     new_message=new_message
                 ):
                     if event.content and event.content.parts:
                         text = event.content.parts[0].text
-                        if text:  # Only concatenate if text is not None
+                        if text:
                             response_text += text
         except asyncio.TimeoutError:
-            timeout_count += 1
-            logger.error(
-                f"invoke_agent.timeout - request_id={request_id} "
-                f"timeout={settings.request_timeout}s"
-            )
+            agent_registry.update_metrics(request.agent_id, success=False)
             raise HTTPException(
                 status_code=504,
-                detail=f"Agent request exceeded {settings.request_timeout} second timeout"
+                detail=f"Request exceeded {settings.request_timeout} second timeout"
             )
         
-        # Estimate tokens (word count as fallback)
+        # Calculate tokens
         token_count = len(response_text.split())
         
-        successful_requests += 1
+        # Update metrics
+        agent_registry.update_metrics(request.agent_id, success=True, tokens=token_count)
+        
         logger.info(
             f"invoke_agent.success - request_id={request_id} "
-            f"tokens={token_count}"
+            f"agent_id={request.agent_id} tokens={token_count}"
         )
         
-        return QueryResponse(
+        return AgentInvokeResponse(
+            agent_id=request.agent_id,
             response=response_text,
-            model=weather_agent.model,
+            model=agent.model,
             tokens=token_count,
-            request_id=request_id
+            request_id=request_id,
+            session_id=session_id
         )
         
-    except HTTPException as e:
-        error_count += 1
-        logger.warning(
-            f"invoke_agent.http_error - request_id={request_id} "
-            f"status={e.status_code}"
-        )
+    except HTTPException:
         raise
     
-    except ValueError as e:
-        error_count += 1
-        logger.warning(
-            f"invoke_agent.validation_error - request_id={request_id} "
-            f"error={str(e)}"
-        )
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid request parameters"
-        )
-    
     except Exception as e:
-        error_count += 1
+        agent_registry.update_metrics(request.agent_id, success=False)
         logger.error(
-            f"invoke_agent.unexpected_error - request_id={request_id} "
-            f"error_type={type(e).__name__} error={str(e)}",
+            f"invoke_agent.error - request_id={request_id} "
+            f"agent_id={request.agent_id} error={str(e)}",
             exc_info=True
         )
-        # Don't expose internal error details
         raise HTTPException(
             status_code=500,
-            detail="An unexpected error occurred. Please try again later."
+            detail="An unexpected error occurred"
         )
 
-@app.middleware("http")
-async def track_requests(request, call_next):
-    """Middleware to track requests and errors."""
-    response = await call_next(request)
-    return response
+@app.get("/health")
+async def health_check():
+    """Health check with system-wide metrics."""
+    agents = agent_registry.list_agents()
+    
+    total_requests = sum(
+        agent["metrics"]["total_requests"] 
+        for agent in agents.values()
+    )
+    total_successful = sum(
+        agent["metrics"]["successful_requests"] 
+        for agent in agents.values()
+    )
+    
+    return {
+        "status": "healthy",
+        "service": "enterprise-multi-agent-api",
+        "environment": settings.environment,
+        "total_agents": len(agents),
+        "system_metrics": {
+            "total_requests": total_requests,
+            "successful_requests": total_successful,
+            "success_rate": total_successful / max(total_requests, 1) if total_requests > 0 else 0
+        },
+        "agents": list(agents.keys())
+    }
 
 # ============================================================================
 # MAIN
@@ -496,7 +484,7 @@ async def track_requests(request, call_next):
 
 if __name__ == "__main__":
     uvicorn.run(
-        "main:app",
+        "multi_agent_example:app",
         host=settings.host,
         port=settings.port,
         reload=True,
