@@ -32,6 +32,7 @@ from google.genai import types
 
 # Import your agents
 from agent import weather_agent
+from github_agent import root_agent as github_agent
 # from other_agents import customer_support_agent, sales_agent, analytics_agent
 
 load_dotenv()
@@ -174,6 +175,12 @@ async def lifespan(app: FastAPI):
         agent_id="weather",
         agent=weather_agent,
         description="Provides current weather and forecasts for any location worldwide"
+    )
+    
+    agent_registry.register_agent(
+        agent_id="github",
+        agent=github_agent,
+        description="GitHub code review assistant that analyzes pull requests and provides feedback"
     )
     
     # Example: Register more agents
@@ -484,7 +491,7 @@ async def health_check():
 
 if __name__ == "__main__":
     uvicorn.run(
-        "multi_agent_example:app",
+        "main:app",
         host=settings.host,
         port=settings.port,
         reload=True,
